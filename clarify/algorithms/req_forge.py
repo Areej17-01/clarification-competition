@@ -688,17 +688,17 @@ class _Execution:
 
 class ReqForge(ClarificationAlgorithmBase):
     DEFAULT_CONFIG: dict[str, Any] = {
-        "num_candidates": 8,
-        "num_final": 8,
-        "num_drafts": 4,
-        "num_inputs": 8,
-        "parallel_calls": 8,
-        "llm_attempts": 3,
-        "max_questions": 3,
-        "skip_dominance": 0.8,
-        "dominance": 0.6,
-        "exec_time_budget": 20.0,
-        "num_repairs": 3,
+        "num_candidates": 8,  # programs sampled before asking
+        "num_final": 8,  # programs sampled after the answer
+        "num_drafts": 4,  # candidate questions drafted, one gets asked
+        "num_inputs": 8,  # test inputs generated on top of the stated examples
+        "parallel_calls": 8,  # LLM calls in flight at once
+        "llm_attempts": 3,  # retries per LLM call
+        "max_questions": 3,  # hard cap on turns, the env budget usually stops earlier
+        "skip_dominance": 0.8,  # skip asking when this share of programs agree
+        "dominance": 0.6,  # ask again only while agreement is below this
+        "exec_time_budget": 20.0,  # seconds per sandbox run
+        "num_repairs": 3,  # repair samples if the best program fails the confirmed example
     }
 
     def complete(self, env: ClarificationEnvironment, prompt: str) -> str | None:
