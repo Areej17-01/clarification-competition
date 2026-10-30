@@ -264,8 +264,6 @@ the developer, or only gestures at an answer without settling it.
 Reply with a JSON object only, no other text: {"definite": true or false}
 """.strip()
 
-# Sandbox script. Runs every candidate on every input, one JSON row per candidate.
-# The __PLACEHOLDERS__ are filled in by _build_harness.
 HARNESS_TEMPLATE = r"""
 import contextlib, copy, io, json, math, signal, time
 
@@ -369,7 +367,6 @@ for index, source in enumerate(CANDIDATES):
     print("@@ROW " + json.dumps({"i": index, "out": outs}), flush=True)
 """
 
-# The two canned replies env.py returns when a question is refused or the call fails.
 USELESS_ANSWERS = ("irrelevant question.", "cannot answer the given question.")
 
 
@@ -515,7 +512,6 @@ def _parse_json(response: str) -> dict[str, Any] | None:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
         return None
-    # Some models copy the "..." from the format example; strip it or json.loads fails.
     text = text[start : end + 1].replace(", ...", "").replace("...", "")
     try:
         value = json.loads(text)
@@ -692,20 +688,18 @@ class _Execution:
 
 class ReqForge(ClarificationAlgorithmBase):
     DEFAULT_CONFIG: dict[str, Any] = {
-        "num_candidates": 8,  # implementations sampled before clarification
-        "num_final": 8,  # implementations sampled after each clarification
-        "num_drafts": 4,  # candidate questions drafted and graded before one is asked
-        "num_inputs": 8,  # LLM-generated inputs; more only adds spurious disagreement
-        "parallel_calls": 8,  # concurrent env.llm calls within one task
-        "llm_attempts": 3,  # attempts per model call before giving up on it
-        "max_questions": 3,  # upper bound on clarification turns (the env budget applies first)
-        "skip_dominance": 0.8,  # the model may skip asking once the leading group holds this share
-        "dominance": 0.6,  # ask again only while the leading group holds less than this share
-        "exec_time_budget": 20.0,  # seconds for one sandbox run (the container limit is 30)
-        "num_repairs": 3,  # repair samples when the leader fails the user-confirmed example
+        "num_candidates": 8,
+        "num_final": 8,
+        "num_drafts": 4,
+        "num_inputs": 8,
+        "parallel_calls": 8,
+        "llm_attempts": 3,
+        "max_questions": 3,
+        "skip_dominance": 0.8,
+        "dominance": 0.6,
+        "exec_time_budget": 20.0,
+        "num_repairs": 3,
     }
-
-    # LLM helpers --------------------------------------------------------------
 
     def complete(self, env: ClarificationEnvironment, prompt: str) -> str | None:
         """One model call; transient failures are retried with backoff, budget errors are not."""
@@ -765,8 +759,6 @@ class ReqForge(ClarificationAlgorithmBase):
             candidates = self.parse_candidates(responses[len(extra) :], problem["entry_point"])
         return responses[: len(extra)], candidates
 
-    # Execution ----------------------------------------------------------------
-
     def execute(
         self,
         env: ClarificationEnvironment,
@@ -807,8 +799,6 @@ class ReqForge(ClarificationAlgorithmBase):
         if not calls:
             return None
         return _Execution(calls, args, expected, rows, prefer_examples, priority, edge_from)
-
-    # Clarification ------------------------------------------------------------
 
     def signature_notes(
         self, problem: dict[str, Any], candidates: list[str], setup: str | None
@@ -933,7 +923,7 @@ class ReqForge(ClarificationAlgorithmBase):
         notes = self.signature_notes(problem, candidates, setup)
         may_skip = bool(clarifications) or (
             execution is not None
-            and execution.expected  # agreement without stated examples anchors nothing
+            and execution.expected
             and execution.top_is_clean()
             and execution.dominance() >= self.config["skip_dominance"]
             and not notes
@@ -964,17 +954,14 @@ class ReqForge(ClarificationAlgorithmBase):
         if drafts is None:
             drafts = _parse_questions(self.complete(env, base_prompt + "\n\n" + REPLY_RETRY) or "")
         if not drafts:
-            return None  # unreadable twice, or an explicit "nothing is unclear"
+            return None
         drafts = drafts[: self.config["num_drafts"]]
 
-        # Let a reviewer pick one draft. Drafts the prompt already answers are out. We only
-        # stay silent when nothing survives: a wasted question costs 4%, a missed one the task.
         best, settled = self.grade_questions(env, problem, drafts)
         viable = [index for index in range(len(drafts)) if index not in settled]
         if not viable:
             return None
         index = best if best in viable else viable[0]
-        # No backticks: the judge copies them and env.py truncates its answer at the first one.
         return drafts[index].replace("`", "").strip()
 
     def grade_questions(
@@ -1081,8 +1068,6 @@ class ReqForge(ClarificationAlgorithmBase):
             return candidates, execution
         return pool, pooled
 
-    # Main ---------------------------------------------------------------------
-
     @staticmethod
     def fenced(code: str) -> str:
         return f"```python\n{code}\n```"
@@ -1117,8 +1102,6 @@ class ReqForge(ClarificationAlgorithmBase):
         for turn in range(self.config["max_questions"]):
             if not env.can_ask():
                 break
-            # Ask again only while the samples still disagree, or once if the last answer
-            # was useless. (Default harness allows one turn anyway.)
             retry = bool(unanswered) and not clarifications
             if (
                 turn > 0
@@ -1143,9 +1126,9 @@ class ReqForge(ClarificationAlgorithmBase):
             useless = not answer.strip() or answer.strip().lower() in USELESS_ANSWERS
             if useless or not self.is_definite(env, problem, question, answer):
                 if unanswered:
-                    break  # two non-answers in a row: stop spending turns
+                    break
                 unanswered.append(question)
-                continue  # a gesture, not a fact: ask about something else instead
+                continue
             clarifications.append((question, answer))
 
             witness = self.witness_expectation(env, problem, execution, question, answer)
@@ -1156,8 +1139,6 @@ class ReqForge(ClarificationAlgorithmBase):
             final_setup, priority = setup, 0
             if witness and setup:
                 final_setup, priority = _with_witness(setup, *witness), 1
-            # Keep the old leader in the vote as a fallback; it only wins if the new samples
-            # do worse on the answer and the examples.
             pool = finals + [best]
             execution = self.execute(
                 env, entry_point, pool, final_setup, prefer_examples=True, priority=priority
