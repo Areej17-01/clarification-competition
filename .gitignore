@@ -216,7 +216,3 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-
-# Local research notes, run outputs and private dev splits (never submitted)
-research/
-data/splits/dev_*.txt
