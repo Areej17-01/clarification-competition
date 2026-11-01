@@ -10,12 +10,15 @@ behaviour. The input where the groups disagree most, plus a short audit of the
 prompt for contradictions, feeds a drafting step that writes a handful of
 candidate questions (return format, the observed split, an edge case, a vague
 rule). A reviewer applying the user's own quality criteria picks one; drafts
-the prompt already answers are dropped. The answer is converted into the
-expected output on the witness input, fresh programs are sampled with the Q/A
-in context, and the final program is the largest group that honours the
-answer and the stated examples. If the user cannot answer, we fall back to the
-pre-question majority. Ideas borrowed from ClarifyGPT, SpecFix, TiCoder,
-CodeT and Self-Debugging.
+the prompt already answers are dropped. The answer is read twice, independently,
+and turned into expected outputs on the inputs it settles; only outputs both
+readings agree on, with the argument count the programs already take, are
+kept. Fresh programs are sampled with the Q/A in context, and the final
+program is the largest group that honours those outputs and the stated
+examples the answer did not override. A program that still fails a trusted
+example some other program passes gets one repair round. If the user cannot
+answer, we fall back to the pre-question majority. Ideas borrowed from
+ClarifyGPT, SpecFix, TiCoder, CodeT and Self-Debugging.
 
 Team: Rubber Duckers
 Team Members: Areej Mehboob, Taha Mehboob (TU Ilmenau)
@@ -44,6 +47,9 @@ CODE_RULES = """
 Requirements for your answer:
 - Define a top-level function named exactly `{entry_point}` with the parameters the problem implies.
 - Include every import you need. Do not include tests, example usage, print statements or input().
+- Do not add input validation, assertions or raise statements unless the problem asks for an error
+  on some input.
+- Handle every valid input, whatever its size; never limit the solution to the inputs shown.
 - Enclose the code in ```python and ```.
 """.strip()
 
@@ -74,14 +80,15 @@ Implement the Python function `{entry_point}` that solves the following problem:
 
 {prompt}
 {clarifications}
-A previous implementation returns the wrong value on the problem's own examples:
+A previous implementation returns the wrong value on these inputs:
 
 {failures}
 
-The expected values are correct. Work out which reading of the problem produces exactly these
-values (for instance which boundaries, orderings or counting rules it implies) and
-implement that reading for all inputs. Do not special-case the listed inputs. The previous
-implementation, for reference:
+The expected values are correct: they come from the problem's own examples and from the user's
+answers, and where the two disagree the user's answer was followed. Work out which reading of
+the problem produces exactly these values (for instance which boundaries, orderings or counting
+rules it implies) and implement that reading for all inputs. Do not special-case the listed
+inputs. The previous implementation, for reference:
 ```python
 {code}
 ```
@@ -97,8 +104,8 @@ Write test inputs for the Python function `{entry_point}` described below.
 
 Return one ```python block that defines three lists:
 - EXAMPLES: every input/output example stated in the problem, as `(args, expected)` pairs, with
-  the expected values copied literally and with the same type (a bare `True` stays a boolean, a
-  quoted `'42'` stays a string). Use [] if there are none.
+  the expected values copied literally and with the same type (an unquoted boolean stays a
+  boolean, a quoted value stays a string). Use [] if there are none.
 - INPUTS: {num_inputs} typical inputs that exercise the main behaviour and are likely to separate
   different readings of the problem (ties, duplicates, ordering, boundaries of the main rule).
 - EDGE_INPUTS: 4 edge cases: an empty or single-element input, zero or negative values, and
@@ -107,8 +114,8 @@ Return one ```python block that defines three lists:
 Every input must be a valid, realistic input for this problem: same argument shape and types as
 the signature and the examples, with data that fits the problem's domain. Do not invent inputs
 the problem would never receive.
-Every `args` is a tuple of positional arguments, e.g. `([1, 2, 3], 2)` for two arguments or
-`([1, 2, 3],)` for a single list argument. If the problem gives no signature, use the most
+Every `args` is a tuple of positional arguments: `(<first>, <second>)` for two arguments,
+`(<only>,)` with a trailing comma for one. If the problem gives no signature, use the most
 natural argument shape for `{entry_point}` and keep it the same for every entry.
 Use only Python literals. Do not call `{entry_point}` or any other function inside the lists.
 """.strip()
@@ -149,9 +156,11 @@ Rules for the question:
   with its result on one realistic input. A question that only asks what to return for an input,
   without naming the rule being decided, is not allowed: it reads as a request for a test case.
   Shape: Does <rule> mean <reading A>, so that f(<input>) returns <A>, or <reading B>, so that it
-  returns <B>? Take the input and both results from the observations when they name one. When a
-  third reading is plausible, end with ", or another rule?" so the user can state the actual
-  rule instead of rejecting both.
+  returns <B>? Take the input and both results from the observations when they name one. Where
+  the problem's own examples give the result for an input, every illustration you use must agree
+  with those examples, unless the question is about one of them. When a third reading is
+  plausible, end with ", or another rule?" so the user can state the actual rule instead of
+  rejecting both.
 - Describe behaviour only through inputs and outputs. Never mention implementations, candidates,
   code, variables, algorithms or "what we observed": the user has not seen any of it.
 - Write every input and output as plain text. Never use backticks, code fences or any other code
@@ -163,13 +172,13 @@ Rules for the question:
   implementation, the algorithm or test cases.
 - Ignore typos and formatting noise; they do not change the meaning.
 
-Examples of the shape (one per kind of unclear point; the topics are illustrative only):
-- Conflict: The description says to return a count, but the example shows a list; should
-  f([1, 2, 2]) return the count 3 or the list [1, 2, 2]?
-- Missing constraint: Is the bound inclusive, so that f([1, 2, 3], 2) returns [2, 3], or
-  exclusive, so that it returns [3]?
-- Vague term: Does "largest" mean largest by value, so that f(["b", "aaa"]) returns "b", or
-  longest, so that it returns "aaa"?
+Shapes by kind of unclear point (fill every <slot> from this problem and the observations):
+- Conflict: The description says <X>, but the example shows <Y>; should f(<input>) return <A>
+  or <B>?
+- Missing constraint: Should <case the problem leaves open> be handled by <rule A>, so that
+  f(<input>) returns <A>, or by <rule B>, so that it returns <B>?
+- Vague term: Does "<term>" mean <reading A>, so that f(<input>) returns <A>, or <reading B>, so
+  that it returns <B>?
 
 {reply_format}
 """.strip()
@@ -195,7 +204,7 @@ each candidate question below against the user's own criteria.
 
 ### Problem
 {prompt}
-
+{observations}
 ### Candidate questions
 {questions}
 
@@ -207,9 +216,12 @@ OBJECTIVITY (a single unambiguous resolution).
 First list every candidate whose answer the problem already settles, quoting exactly the
 sentence, signature or example that settles it (typos and formatting noise settle nothing).
 Then pick, among the others, the ONE candidate most likely to reveal a requirement the problem
-leaves out. When nothing in the problem shows what the function returns, the question about
-the return value's type and format wins; otherwise prefer the question whose answer changes the
-returned value on the most ordinary inputs.
+leaves out. Prefer, in this order: the question about the return value's type and format, when
+nothing in the problem shows what the function returns; the question that settles a point where
+the problem's own example and the natural reading of its text disagree; the question that
+settles the input on which the implementations split; the question whose answer changes the
+returned value on the most ordinary inputs. A question about an edge case, invalid input or
+error handling ranks below all of these unless the problem itself singles out such inputs.
 Reply with a JSON object only, no other text, like
 {"settled": [{"index": 2, "quote": "<the quoted part of the problem>"}], "best": 0}
 with an empty "settled" list when nothing is settled.
@@ -218,8 +230,8 @@ with an empty "settled" list when nothing is settled.
 CONFLICT_PROMPT_TEMPLATE = """
 Read the problem for the Python function `{entry_point}` and look only for internal conflicts:
 places where the description, the signature or type annotations, and the examples do not agree
-about what the function receives or returns (for example the text says "return the count" while an
-example shows a list, or the text states a rule that an example violates).
+about what the function receives or returns (the text names one return type or rule while an
+example shows another, or the signature disagrees with the text or an example).
 
 ### Problem
 {prompt}
@@ -232,7 +244,7 @@ formatting noise. Do not report missing information, only disagreements between 
 present.
 """.strip()
 
-EXPECTED_PROMPT_TEMPLATE = """
+ANSWER_TESTS_PROMPT_TEMPLATE = """
 The user clarified a requirement for the Python function `{entry_point}`.
 
 ### Problem
@@ -242,11 +254,23 @@ The user clarified a requirement for the Python function `{entry_point}`.
 Question: {question}
 Answer: {answer}
 
-Based on the problem and the user's answer, what exactly must `{call}` return?
+### Test inputs
+{calls}
+
+Which return values does the answer settle? List every test input whose return value now follows
+from the problem together with the answer, and give that value. Work each value out from the
+user's answer; where the problem's text or examples disagree with the answer, the answer is right.
+If a listed input is one of the problem's own examples, include it only when the answer changes
+its printed result, and then give the result the answer implies, never the printed one.
+The question itself may name an input with two possible results; when the answer picks one, that
+input is settled too and belongs in the list even if it is not among the test inputs. The values
+you give become tests the final program must pass, so skip every input the answer leaves open,
+every value you are not certain of, and every input about something the answer does not touch.
 Reply with a JSON object only, no other text:
-{"value": "<the returned value as a Python literal in a string, for example '[1, 2]', or null>",
- "raises": "<ExceptionName if the call must raise, or null>"}
-Set both to null when the answer does not determine the result.
+{"tests": [{"call": "<a listed call, or a new call written as {entry_point}(...) with literal arguments>",
+            "value": "<the returned value as a Python literal in a string, or null>",
+            "raises": "<ExceptionName if the call must raise, or null>"}]}
+Reply {"tests": []} when the answer determines no return value.
 """.strip()
 
 DEFINITE_PROMPT_TEMPLATE = """
@@ -484,13 +508,43 @@ def _call_arity(args: Any) -> int:
     return len(args) if isinstance(args, tuple) else 1
 
 
-def _with_witness(setup: str, args_source: str, expected_source: str) -> str:
-    """Prepends the clarified (input, expected) pair to EXAMPLES, keeping the original setup."""
-    body = "\n".join("    " + line for line in setup.splitlines()) or "    pass"
+def _with_tests(setup: str, tests: list[tuple[str, str]]) -> str:
+    """Puts the (input, expected) pairs derived from the answer in front of EXAMPLES and drops the
+    stated examples on the same inputs, so the answer wins where the two disagree."""
+    pairs = ", ".join(f"({a}, {e})" for a, e in tests)
     return (
-        f"try:\n{body}\nexcept BaseException:\n    pass\n"
-        f"EXAMPLES = [({args_source}, {expected_source})] + list(globals().get('EXAMPLES', []))\n"
+        f"try:\n    exec({setup!r}, globals())\nexcept BaseException:\n    pass\n"
+        f"_TESTS = [{pairs}]\n"
+        "def _same(a, b):\n"
+        "    try:\n"
+        "        a = a if isinstance(a, tuple) else (a,)\n"
+        "        b = b if isinstance(b, tuple) else (b,)\n"
+        "        return bool(a == b)\n"
+        "    except Exception:\n"
+        "        return False\n"
+        "_STATED = [e for e in list(globals().get('EXAMPLES', [])) if isinstance(e, tuple) and len(e) == 2]\n"
+        "EXAMPLES = _TESTS + [e for e in _STATED if not any(_same(e[0], t[0]) for t in _TESTS)]\n"
     )
+
+
+def _call_args_source(call: str, entry_point: str) -> str | None:
+    """repr of the argument tuple of a literal call `entry_point(...)`, or None."""
+    try:
+        node = ast.parse(call.strip(), mode="eval").body
+    except (SyntaxError, ValueError):
+        return None
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == entry_point
+        and not node.keywords
+    ):
+        return None
+    try:
+        args = tuple(ast.literal_eval(arg) for arg in node.args)
+        return repr(args) if ast.literal_eval(repr(args)) == args else None
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return None
 
 
 def _build_harness(entry_point: str, candidates: list[str], setup: str, time_budget: float) -> str:
@@ -560,13 +614,12 @@ def _parse_grades(response: str, count: int) -> tuple[int | None, set[int]]:
     return (best if isinstance(best, int) and 0 <= best < count else None), settled
 
 
-def _parse_expected(response: str) -> str | None:
-    """Source of the expected literal for the witness call, or None when undetermined."""
-    data = _parse_json(response) or {}
-    raises = data.get("raises")
+def _expected_source(item: dict[str, Any]) -> str | None:
+    """Source of the expected literal, or the marker of the expected exception, or None."""
+    raises = item.get("raises")
     if isinstance(raises, str) and raises.strip().isidentifier():
         return repr("__EXC__:" + raises.strip())
-    value = data.get("value")
+    value = item.get("value")
     if value is None:
         return None
     text = value.strip() if isinstance(value, str) else repr(value)
@@ -574,6 +627,63 @@ def _parse_expected(response: str) -> str | None:
         return repr(ast.literal_eval(text))
     except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
         return None
+
+
+def _literal_arity(source: str) -> int | None:
+    """Number of positional arguments in an argument-tuple source, or None when not literal."""
+    try:
+        return _call_arity(ast.literal_eval(source))
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return None
+
+
+def _parse_answer_tests(
+    response: str, calls: list[str], args: list[str], entry_point: str, limit: int
+) -> list[tuple[str, str]]:
+    """(args source, expected source) pairs the answer settles, one per input, model's order.
+
+    A new input must pass as many arguments as the inputs the programs already run with. A test
+    the programs cannot even call says nothing about their behaviour; it only invites a rewrite
+    of the signature.
+    """
+    data = _parse_json(response) or {}
+    items = data.get("tests")
+    arities = {n for n in (_literal_arity(source) for source in args) if n is not None}
+    tests: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("call"), str):
+            continue
+        call = item["call"].strip()
+        args_source = None
+        if call in calls and calls.index(call) < len(args):
+            args_source = args[calls.index(call)]
+            if _literal_arity(args_source) is None:
+                args_source = None
+        if args_source is None:
+            args_source = _call_args_source(call, entry_point)
+            if args_source is not None and arities and _literal_arity(args_source) not in arities:
+                args_source = None
+        expected_source = _expected_source(item)
+        if args_source is None or expected_source is None or args_source in seen:
+            continue
+        seen.add(args_source)
+        tests.append((args_source, expected_source))
+        if len(tests) >= limit:
+            break
+    return tests
+
+
+def _agreed_tests(derivations: list[list[tuple[str, str]]], limit: int) -> list[tuple[str, str]]:
+    """Tests present in every derivation, in the first one's order.
+
+    Two independent readings of the answer that disagree on a value show the value was guessed,
+    and a guessed test must not decide the vote.
+    """
+    if not derivations:
+        return []
+    first, rest = derivations[0], derivations[1:]
+    return [test for test in first if all(test in other for other in rest)][:limit]
 
 
 def _parse_definite(response: str) -> bool:
@@ -589,7 +699,8 @@ class _Execution:
 
     Clusters are ranked by size, or first by agreement with the problem's own examples when
     `prefer_examples` is set. `priority` marks how many leading examples come from the user's
-    clarification; matching those outranks everything else.
+    clarification; matching those outranks everything else. `dead` holds the indices of stated
+    examples the clarification overrode; they count for nothing.
     """
 
     def __init__(
@@ -601,11 +712,14 @@ class _Execution:
         prefer_examples: bool,
         priority: int = 0,
         edge_from: int | None = None,
+        dead: frozenset[int] = frozenset(),
     ):
         self.calls = calls
         self.args = args
         self.expected = expected
         self.rows = rows
+        self.priority = priority
+        self.dead = dead
         self.edge_from = len(calls) if edge_from is None else edge_from
         self.loaded = sum(row is not None for row in rows)
 
@@ -628,7 +742,16 @@ class _Execution:
 
     def example_passes(self, outputs: tuple[str, ...] | list[str], limit: int | None = None) -> int:
         expected = self.expected if limit is None else self.expected[:limit]
-        return sum(o == e for o, e in zip(outputs, expected, strict=False))
+        pairs = zip(outputs, expected, strict=False)
+        return sum(o == e for i, (o, e) in enumerate(pairs) if i not in self.dead)
+
+    def pass_share(self, index: int) -> float:
+        """Share of the loaded programs whose output on example `index` is the expected one."""
+        rows = [row for row in self.rows if row is not None]
+        if not rows or index >= len(self.expected):
+            return 0.0
+        hits = sum(index < len(row) and row[index] == self.expected[index] for row in rows)
+        return hits / len(rows)
 
     def best(self) -> int | None:
         return self.clusters[0][1][0] if self.clusters else None
@@ -650,7 +773,7 @@ class _Execution:
         outputs = self.clusters[0][0]
         if any(_is_failure(o) for o in outputs):
             return False
-        return self.example_passes(outputs) == len(self.expected)
+        return self.example_passes(outputs) == len(self.expected) - len(self.dead)
 
     def witness(self) -> int | None:
         """The input the candidates disagree on most (max entropy), preferring value-vs-value
@@ -686,10 +809,44 @@ class _Execution:
         return [(output, n, first_seen[output]) for output, n in counts.most_common()]
 
 
+def _overridden(
+    calls: list[str],
+    expected: list[str],
+    rows: list[list[str] | None],
+    priority: int,
+    baseline: _Execution | None,
+    share: float,
+) -> frozenset[int]:
+    """Stated examples the clarification overrode: at least `share` of the programs passed them
+    before the answer and fewer than `share` pass them after it. Examples already overridden in
+    the baseline stay overridden. The first `priority` examples come from the answer itself."""
+    if baseline is None:
+        return frozenset()
+    before = {
+        baseline.calls[i]: baseline.pass_share(i)
+        for i in range(min(len(baseline.calls), len(baseline.expected)))
+    }
+    dead_calls = {baseline.calls[i] for i in baseline.dead if i < len(baseline.calls)}
+    loaded = [row for row in rows if row is not None]
+    dead = set()
+    for index in range(priority, min(len(expected), len(calls))):
+        call = calls[index]
+        if call in dead_calls:
+            dead.add(index)
+        elif loaded:
+            hits = sum(index < len(row) and row[index] == expected[index] for row in loaded)
+            if hits / len(loaded) < share and before.get(call, 0.0) >= share:
+                dead.add(index)
+    return frozenset(dead)
+
+
 class ReqForge(ClarificationAlgorithmBase):
     DEFAULT_CONFIG: dict[str, Any] = {
         "num_candidates": 8,  # programs sampled before asking
-        "num_final": 8,  # programs sampled after the answer
+        "num_final": 12,  # programs sampled after the answer
+        "num_answer_tests": 4,  # (input, expected) pairs derived from the answer, at most
+        "num_answer_test_samples": 2,  # independent readings of the answer; a test must appear in every one
+        "override_share": 0.5,  # a stated example passed by this share before the answer and failed by it after is dropped
         "num_drafts": 4,  # candidate questions drafted, one gets asked
         "num_inputs": 8,  # test inputs generated on top of the stated examples
         "parallel_calls": 8,  # LLM calls in flight at once
@@ -698,7 +855,7 @@ class ReqForge(ClarificationAlgorithmBase):
         "skip_dominance": 0.8,  # skip asking when this share of programs agree
         "dominance": 0.6,  # ask again only while agreement is below this
         "exec_time_budget": 20.0,  # seconds per sandbox run
-        "num_repairs": 3,  # repair samples if the best program fails the confirmed example
+        "num_repairs": 3,  # repair samples if the best program fails a trusted example
     }
 
     def complete(self, env: ClarificationEnvironment, prompt: str) -> str | None:
@@ -767,6 +924,7 @@ class ReqForge(ClarificationAlgorithmBase):
         setup: str | None,
         prefer_examples: bool,
         priority: int = 0,
+        baseline: _Execution | None = None,
     ) -> _Execution | None:
         if not candidates or not setup:
             return None
@@ -798,7 +956,8 @@ class ReqForge(ClarificationAlgorithmBase):
 
         if not calls:
             return None
-        return _Execution(calls, args, expected, rows, prefer_examples, priority, edge_from)
+        dead = _overridden(calls, expected, rows, priority, baseline, self.config["override_share"])
+        return _Execution(calls, args, expected, rows, prefer_examples, priority, edge_from, dead)
 
     def signature_notes(
         self, problem: dict[str, Any], candidates: list[str], setup: str | None
@@ -867,7 +1026,7 @@ class ReqForge(ClarificationAlgorithmBase):
         mismatches = [
             (execution.calls[i], expected, top_outputs[i])
             for i, expected in enumerate(execution.expected)
-            if i < len(top_outputs) and top_outputs[i] != expected
+            if i < len(top_outputs) and top_outputs[i] != expected and i not in execution.dead
         ]
         for call, expected, got in mismatches[:3]:
             lines.append(
@@ -957,53 +1116,87 @@ class ReqForge(ClarificationAlgorithmBase):
             return None
         drafts = drafts[: self.config["num_drafts"]]
 
-        best, settled = self.grade_questions(env, problem, drafts)
+        best, settled = self.grade_questions(env, problem, drafts, self.summary(execution))
         viable = [index for index in range(len(drafts)) if index not in settled]
         if not viable:
             return None
         index = best if best in viable else viable[0]
         return drafts[index].replace("`", "").strip()
 
+    def summary(self, execution: _Execution | None) -> str:
+        """Two facts for the reviewer: the stated examples the leading implementation fails, and
+        the input the implementations split on."""
+        if execution is None or not execution.clusters:
+            return ""
+        lines = []
+        top = execution.clusters[0][0]
+        for index, expected in enumerate(execution.expected):
+            if index < len(top) and top[index] != expected and index not in execution.dead:
+                lines.append(
+                    f"- The problem's own example `{execution.calls[index]}` expects `{expected}`, "
+                    f"but the most common implementation returns `{top[index]}`."
+                )
+        witness = execution.witness()
+        if witness is not None:
+            groups = execution.witness_groups(witness)
+            split = ", ".join(f"{n} return `{output}`" for output, n, _ in groups[:3])
+            lines.append(
+                f"- Independent implementations split on `{execution.calls[witness]}`: {split}."
+            )
+        return "\n".join(lines[:4])
+
     def grade_questions(
-        self, env: ClarificationEnvironment, problem: dict[str, Any], drafts: list[str]
+        self,
+        env: ClarificationEnvironment,
+        problem: dict[str, Any],
+        drafts: list[str],
+        observations: str = "",
     ) -> tuple[int | None, set[int]]:
         """Reviewer's pick among the drafts, and the drafts the problem already settles."""
         listing = "\n".join(f"{index}. {draft}" for index, draft in enumerate(drafts))
+        block = ""
+        if observations:
+            block = (
+                "\n### What independent implementations did (internal; the user has not seen this)\n"
+                f"{observations}\n"
+            )
         prompt = (
             GRADE_PROMPT_TEMPLATE.replace("{prompt}", problem["prompt"])
             .replace("{entry_point}", problem["entry_point"])
+            .replace("{observations}", block)
             .replace("{questions}", listing)
         )
         return _parse_grades(self.complete(env, prompt) or "", len(drafts))
 
-    def witness_expectation(
+    def answer_tests(
         self,
         env: ClarificationEnvironment,
         problem: dict[str, Any],
         execution: _Execution | None,
         question: str,
         answer: str,
-    ) -> tuple[str, str] | None:
-        """(args source, expected source) for the witness input, derived from the user's answer."""
-        if execution is None:
-            return None
-        index = execution.witness()
-        if index is None or index >= len(execution.args):
-            return None
-        args_source = execution.args[index]
-        try:
-            ast.literal_eval(args_source)
-        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
-            return None
+    ) -> list[tuple[str, str]]:
+        """(args source, expected source) pairs the answer settles, among the inputs we already
+        run or on an input the question itself names. The answer is read several times
+        independently and only the tests every reading agrees on are kept."""
+        calls = list(execution.calls) if execution is not None else []
+        args = list(execution.args) if execution is not None else []
+        listing = "\n".join(f"- {call}" for call in calls) or "(none)"
         prompt = (
-            EXPECTED_PROMPT_TEMPLATE.replace("{prompt}", problem["prompt"])
+            ANSWER_TESTS_PROMPT_TEMPLATE.replace("{prompt}", problem["prompt"])
             .replace("{entry_point}", problem["entry_point"])
             .replace("{question}", question)
             .replace("{answer}", answer)
-            .replace("{call}", execution.calls[index])
+            .replace("{calls}", listing)
         )
-        expected_source = _parse_expected(self.complete(env, prompt) or "")
-        return (args_source, expected_source) if expected_source else None
+        limit = self.config["num_answer_tests"]
+        responses = self.complete_many(env, [prompt] * self.config["num_answer_test_samples"])
+        derivations = [
+            _parse_answer_tests(response, calls, args, problem["entry_point"], 4 * limit)
+            for response in responses
+            if response
+        ]
+        return _agreed_tests(derivations, limit)
 
     def repair(
         self,
@@ -1014,28 +1207,31 @@ class ReqForge(ClarificationAlgorithmBase):
         setup: str | None,
         execution: _Execution | None,
         priority: int = 0,
+        baseline: _Execution | None = None,
     ) -> tuple[list[str], _Execution | None]:
-        """One repair round when the leader fails the example we got from the user.
+        """One repair round when the leader fails a trusted example.
 
-        Only the first `priority` examples (the ones derived from the answer) are trusted;
-        examples printed in the prompt can be the corrupted part of a variant. We show the
-        model the failing call with expected vs actual and let it rewrite. Repaired programs
-        join the pool and the normal example-first ranking decides.
+        Trusted examples are the ones derived from the user's answer and the stated examples the
+        answer did not override, in both cases only when at least one program in the pool passes
+        them. An example every program fails is left alone: either its value is wrong or a
+        rewrite aimed at it would special-case it. We show the model the failing calls with
+        expected vs actual and let it rewrite. Repaired programs join the pool and the normal
+        example-first ranking decides.
         """
-        if execution is None or priority <= 0 or not execution.expected or not setup:
+        if execution is None or not execution.expected or not setup:
             return candidates, execution
         best = execution.best()
         if best is None or best >= len(candidates) or execution.rows[best] is None:
             return candidates, execution
+        rows = [row for row in execution.rows if row is not None]
         failures = [
             f"- {call} should return {expected} but returns {got}"
-            for call, expected, got in zip(
-                execution.calls[:priority],
-                execution.expected[:priority],
-                execution.rows[best][:priority],
-                strict=False,
+            for index, (call, expected, got) in enumerate(
+                zip(execution.calls, execution.expected, execution.rows[best], strict=False)
             )
             if got != expected
+            and index not in execution.dead
+            and any(index < len(row) and row[index] == expected for row in rows)
         ]
         if not failures:
             return candidates, execution
@@ -1062,7 +1258,13 @@ class ReqForge(ClarificationAlgorithmBase):
             return candidates, execution
         pool = candidates + repaired
         pooled = self.execute(
-            env, entry_point, pool, setup, prefer_examples=True, priority=priority
+            env,
+            entry_point,
+            pool,
+            setup,
+            prefer_examples=True,
+            priority=priority,
+            baseline=baseline,
         )
         if pooled is None:
             return candidates, execution
@@ -1131,20 +1333,26 @@ class ReqForge(ClarificationAlgorithmBase):
                 continue
             clarifications.append((question, answer))
 
-            witness = self.witness_expectation(env, problem, execution, question, answer)
+            tests = self.answer_tests(env, problem, execution, question, answer)
             _, finals = self.sample(env, problem, clarifications, self.config["num_final"])
             if not finals:
                 break
 
             final_setup, priority = setup, 0
-            if witness and setup:
-                final_setup, priority = _with_witness(setup, *witness), 1
-            pool = finals + [best]
+            if tests:
+                final_setup, priority = _with_tests(setup or "", tests), len(tests)
+            baseline = execution
             execution = self.execute(
-                env, entry_point, pool, final_setup, prefer_examples=True, priority=priority
+                env,
+                entry_point,
+                finals,
+                final_setup,
+                prefer_examples=True,
+                priority=priority,
+                baseline=baseline,
             )
             candidates, execution = self.repair(
-                env, problem, clarifications, pool, final_setup, execution, priority
+                env, problem, clarifications, finals, final_setup, execution, priority, baseline
             )
             best = (
                 candidates[execution.best()]
