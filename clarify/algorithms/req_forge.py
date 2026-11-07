@@ -8,8 +8,9 @@ One question, then code. A first model call writes the developer's complete
 reading of the task (what the function receives, what it returns and the rule)
 and names the single point the text leaves unsettled: a condition that is
 missing, a contradiction, or a phrase with two readings. The question states
-that reading and asks that one point, with the current assumption and its
-result on an input, leaving the user free to correct any part of the reading.
+that reading concretely, with the call signature and one worked example, and
+asks the user to confirm it or say what differs, naming that point as the one
+most in doubt.
 Several implementations are then sampled from the text and the answer, each
 restating the complete requirement before the code; a set of generated inputs
 is run against all of them in one sandbox call and the final program is the
@@ -96,14 +97,14 @@ Work in three steps and reply with a JSON object only, no other text:
    between a statement and an example, or a phrase with two readings that give different results.
    Prefer a gap whose resolution changes the output on ordinary inputs over one that only affects
    edge cases.
-3. "question": one question to the user about that gap and nothing else. Open with the reading
-   above as the developer's current understanding, in the user's own terms, then ask the one fact
-   that settles the gap: name the developer's current assumption and its result on one realistic
-   input, and leave the user free to state a different rule. The question must ask for exactly one
-   fact that cannot be inferred from the text and that fits in a one-sentence answer; describe
-   behaviour only through inputs and outputs, never through code, algorithms, implementations or
-   test cases; never touch style, performance, loops, recursion or complexity; and contain no
-   backticks, code fences, other code formatting or line breaks.
+3. "question": one message to the user. State the reading above as the developer's current
+   understanding, concretely: how `{entry_point}` is called (each parameter and what it holds, in
+   order), what it returns, the rule that produces it, and one worked example call with the
+   result that understanding gives. Then ask the user to confirm that understanding or to state
+   exactly what differs, naming the gap above as the point most in doubt. Describe behaviour only
+   through inputs and outputs, never through code, algorithms, implementations or test cases;
+   never touch style, performance, loops, recursion or complexity; and use no backticks, code
+   fences, other code formatting or line breaks.
 {"reading": "<one sentence>", "gap": "<one sentence>", "question": "<the question>"}
 """.strip()
 
@@ -257,13 +258,11 @@ def _extract_code(response: str, entry_point: str) -> str | None:
 
 
 def _extract_setup(response: str) -> str | None:
-    """All fenced blocks of the inputs reply, joined, so EXAMPLES and INPUTS both survive."""
     blocks = _code_blocks(response)
     return "\n".join(blocks) if blocks else None
 
 
 def _is_script_noise(node: ast.stmt) -> bool:
-    """Top-level statements that would run (and possibly fail) when the solution is imported."""
     if isinstance(node, ast.If):
         return "__name__" in ast.unparse(node.test)
     if isinstance(node, ast.Assert):
@@ -274,7 +273,6 @@ def _is_script_noise(node: ast.stmt) -> bool:
 
 
 def _finalize(code: str, entry_point: str) -> str:
-    """Drops demo code and aliases the entry point if the model renamed the function."""
     try:
         tree = ast.parse(code)
     except SyntaxError:
@@ -311,7 +309,6 @@ def _is_failure(output: str) -> bool:
 
 
 def _parse_json(response: str) -> dict[str, Any] | None:
-    """The JSON object in a reply; anything around it (a code fence, a sentence) is ignored."""
     text = _strip_reasoning(response)
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
@@ -325,12 +322,6 @@ def _parse_json(response: str) -> dict[str, Any] | None:
 
 
 class _Execution:
-    """Behaviour of a set of candidates on the shared inputs, grouped into clusters.
-
-    Clusters are ranked by size, or first by agreement with the problem's own examples when
-    `prefer_examples` is set. A cluster that fails on every input ranks last.
-    """
-
     def __init__(
         self,
         calls: list[str],
@@ -376,7 +367,6 @@ class ReqForge(ClarificationAlgorithmBase):
     }
 
     def complete(self, env: ClarificationEnvironment, prompt: str) -> str | None:
-        """One model call; transient failures are retried with backoff, budget errors are not."""
         delay = 1.0
         for attempt in range(self.config["llm_attempts"]):
             try:
@@ -423,7 +413,6 @@ class ReqForge(ClarificationAlgorithmBase):
         count: int,
         extra_prompts: list[str] | None = None,
     ) -> tuple[list[str | None], list[str]]:
-        """Samples `count` implementations (plus any extra prompts first); retries once if none parse."""
         extra = list(extra_prompts or [])
         prompt = self.code_prompt(problem, clarifications)
         responses = self.complete_many(env, extra + [prompt] * count)
@@ -475,8 +464,6 @@ class ReqForge(ClarificationAlgorithmBase):
     def reading_question(
         self, env: ClarificationEnvironment, problem: dict[str, Any]
     ) -> str | None:
-        """One question that states the developer's full reading of the task and asks the single
-        fact the text leaves unsettled; the user's answer then confirms or corrects both."""
         prompt = READING_PROMPT_TEMPLATE.replace("{prompt}", problem["prompt"]).replace(
             "{entry_point}", problem["entry_point"]
         )
@@ -488,7 +475,6 @@ class ReqForge(ClarificationAlgorithmBase):
         return None
 
     def run(self, env: ClarificationEnvironment, problem: dict[str, Any]) -> str:
-        """Ask once about the gap in the text, then implement from the text plus the answer."""
         entry_point = problem["entry_point"]
         clarifications: list[tuple[str, str]] = []
         if env.can_ask():
